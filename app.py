@@ -12,8 +12,8 @@ from email import encoders
 # --- CONFIGURATION ---
 SMTP_SERVER = "mail.drools.com" 
 SMTP_PORT = 587
-SENDER_EMAIL = "aditya.dubey@drools.com" 
-SENDER_PASSWORD = "Oppo@2222"
+SENDER_EMAIL = st.secrets["SENDER_EMAIL"]
+SENDER_PASSWORD = st.secrets["SENDER_PASSWORD"]
 
 REMOVE_RSM_POD = ["ECOM & MT", "ESPT", "VET PHARMA", "EXPORT", "AQUA"]
 
@@ -214,5 +214,6 @@ if raw_file and mapping_file:
 
                 send_email_smtp(email_map_to[str(target)], f"Daily Report - {target}", body, fname, email_map_cc.get(str(target)))
                 st.write(f"✅ Sent Detailed Mail: {target}")
+
 
         st.balloons()
