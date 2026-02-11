@@ -40,8 +40,9 @@ def apply_excel_format(writer, sheet_name, df_obj):
     worksheet.conditional_format(0, 0, len(df_obj), len(df_obj.columns) - 1, {'type': 'no_errors', 'format': cell_fmt})
     for i, col in enumerate(df_obj.columns):
         worksheet.write(0, i, col, header_fmt)
-        max_len = max(df_obj[col].astype(str).map(len).max(), len(str(col))) + 2
-        worksheet.set_column(i, i, min(max_len, 50)) 
+        if not df_obj.empty:
+            max_len = max(df_obj[col].astype(str).map(len).max(), len(str(col))) + 2
+            worksheet.set_column(i, i, min(max_len, 50)) 
 
 def send_email_smtp(to_email, subject, body_html, attachment_path, cc_emails=None):
     try:
@@ -92,7 +93,7 @@ if raw_file and mapping_file:
     df["Billing_Date"] = pd.to_datetime(df["Billing_Date"], errors="coerce")
     today = pd.Timestamp.now().normalize()
 
-    # Yesterday Remarks
+    # Yesterday Remarks logic
     df["Yesterday Remarks"] = ""
     df["Yesterday Standard Remarks"] = ""
     if yesterday_file:
@@ -117,12 +118,7 @@ if raw_file and mapping_file:
 
     # --- DISPATCH PIVOT WITH GRAND TOTAL ---
     dispatch_pivot = dispatch_df.groupby("Location").agg({"Billing_Doc":"count", "Bill_Amount":"sum", "Gross_Weight_Tons":"sum"}).rename(columns={"Billing_Doc":"Invoice Count"}).reset_index()
-    d_total = pd.DataFrame({
-        "Location":["Grand Total"], 
-        "Invoice Count":[dispatch_pivot["Invoice Count"].sum()], 
-        "Bill_Amount":[dispatch_pivot["Bill_Amount"].sum()], 
-        "Gross_Weight_Tons":[dispatch_pivot["Gross_Weight_Tons"].sum()]
-    })
+    d_total = pd.DataFrame({"Location":["Grand Total"], "Invoice Count":[dispatch_pivot["Invoice Count"].sum()], "Bill_Amount":[dispatch_pivot["Bill_Amount"].sum()], "Gross_Weight_Tons":[dispatch_pivot["Gross_Weight_Tons"].sum()]})
     dispatch_pivot = pd.concat([dispatch_pivot, d_total], ignore_index=True)
 
     # --- POD PIVOT ---
@@ -166,12 +162,16 @@ if raw_file and mapping_file:
                 fname = f"Report_{target}.xlsx"
                 is_loc = target in dispatch_df['Location'].values
                 
-                sub_disp = d_excel[dispatch_df['Location' if is_loc else 'RM'] == target].copy()
-                sub_pod = p_excel[pod_df['Location' if is_loc else 'RM'] == target].copy()
+                sub_disp_xl = d_excel[dispatch_df['Location' if is_loc else 'RM'] == target].copy()
+                sub_pod_xl = p_excel[pod_df['Location' if is_loc else 'RM'] == target].copy()
 
+                # --- DISPATCH TABLE IN MAIL (LOCATION ADDED) ---
                 crit_data = dispatch_df[(dispatch_df['Location' if is_loc else 'RM'] == target) & (dispatch_df["Pending Days"] > 7)].copy()
                 crit_data["Billing_Date"] = crit_data["Billing_Date"].dt.strftime('%d-%m-%Y')
-                t_disp = crit_data[["Billing_Doc", "Customer_Name", "Billing_Date", "Pending Days", "Bill_Amount"]].to_html(index=False, border=1) if not crit_data.empty else "<p>No critical pending (>7 days).</p>"
+                
+                # Selecting columns for mail body table
+                mail_cols = ["Location", "Billing_Doc", "Customer_Name", "Billing_Date", "Pending Days", "Bill_Amount"]
+                t_disp = crit_data[mail_cols].to_html(index=False, border=1) if not crit_data.empty else "<p>No critical pending (>7 days).</p>"
                 
                 loc_sum = pod_pivot[pod_pivot['Location' if is_loc else 'RM'] == target]
                 t_pod = loc_sum.to_html(index=False, border=1) if not loc_sum.empty else ""
@@ -179,14 +179,14 @@ if raw_file and mapping_file:
                 body = f"<html><body style='font-family: Calibri;'>Dear <b>{target}</b>,<br>Attached is your daily report.<br><h3 style='color:red;'>⚠️ Critical Pending (>7 Days)</h3>{t_disp}<h3>📦 POD Summary</h3>{t_pod}<br>Regards, <b>Aditya</b></body></html>"
 
                 with pd.ExcelWriter(fname, engine='xlsxwriter') as writer:
-                    sub_disp.to_excel(writer, sheet_name="Dispatch", index=False)
-                    sub_pod.to_excel(writer, sheet_name="Pod", index=False)
-                    apply_excel_format(writer, "Dispatch", sub_disp)
-                    apply_excel_format(writer, "Pod", sub_pod)
+                    sub_disp_xl.to_excel(writer, sheet_name="Dispatch", index=False)
+                    sub_pod_xl.to_excel(writer, sheet_name="Pod", index=False)
+                    apply_excel_format(writer, "Dispatch", sub_disp_xl)
+                    apply_excel_format(writer, "Pod", sub_pod_xl)
 
                 send_email_smtp(email_map_to[str(target)], f"Daily Report - {target}", body, fname, email_map_cc.get(str(target)))
                 st.write(f"✅ Sent: {target}")
 
         send_email_smtp(SENDER_EMAIL, "Master Report Consolidated", "Attached is the main sheet.", master_fname)
-        st.success("All Mails and Master Sheet (with Grand Totals) Sent!")
+        st.success("Main Sheet Sent to Admin & Target Mails Dispatched!")
         st.balloons()
