@@ -92,7 +92,7 @@ if raw_file and mapping_file:
     df["Billing_Date"] = pd.to_datetime(df["Billing_Date"], errors="coerce")
     today = pd.Timestamp.now().normalize()
 
-    # Yesterday Remarks logic
+    # Yesterday Remarks
     df["Yesterday Remarks"] = ""
     df["Yesterday Standard Remarks"] = ""
     if yesterday_file:
@@ -115,8 +115,17 @@ if raw_file and mapping_file:
     pod_df["Month"] = pod_df["Billing_Date"].dt.strftime("%b")
     pod_df = pod_df[[c for c in POD_ORDER if c in pod_df.columns]]
 
-    # Pivots
+    # --- DISPATCH PIVOT WITH GRAND TOTAL ---
     dispatch_pivot = dispatch_df.groupby("Location").agg({"Billing_Doc":"count", "Bill_Amount":"sum", "Gross_Weight_Tons":"sum"}).rename(columns={"Billing_Doc":"Invoice Count"}).reset_index()
+    d_total = pd.DataFrame({
+        "Location":["Grand Total"], 
+        "Invoice Count":[dispatch_pivot["Invoice Count"].sum()], 
+        "Bill_Amount":[dispatch_pivot["Bill_Amount"].sum()], 
+        "Gross_Weight_Tons":[dispatch_pivot["Gross_Weight_Tons"].sum()]
+    })
+    dispatch_pivot = pd.concat([dispatch_pivot, d_total], ignore_index=True)
+
+    # --- POD PIVOT ---
     pod_pivot = pd.pivot_table(pod_df, index=["RM", "Location"], columns="Month", values="Billing_Doc", aggfunc="count", fill_value=0, margins=True, margins_name="Grand Total").reset_index()
     pod_pivot.columns.name = None
 
@@ -130,15 +139,14 @@ if raw_file and mapping_file:
     st.markdown("---")
 
     if st.button("🚀 Run Automation & Send Mails"):
-        # Create Dataframes with formatted dates for EXCEL
         d_excel = dispatch_df.copy()
         p_excel = pod_df.copy()
         d_excel["Billing_Date"] = d_excel["Billing_Date"].dt.strftime('%d-%m-%Y')
         p_excel["Billing_Date"] = p_excel["Billing_Date"].dt.strftime('%d-%m-%Y')
         p_excel["Dispatch_Date"] = p_excel["Dispatch_Date"].dt.strftime('%d-%m-%Y')
 
-        # 1. MASTER FILE
         master_fname = f"Pending dispatches and pod {datetime.now().strftime('%d-%b-%Y')}.xlsx"
+        
         with pd.ExcelWriter(master_fname, engine='xlsxwriter') as writer:
             d_excel.to_excel(writer, sheet_name="Dispatch", index=False)
             p_excel.to_excel(writer, sheet_name="Pod", index=False)
@@ -149,7 +157,6 @@ if raw_file and mapping_file:
             apply_excel_format(writer, "Dispatch pivot", dispatch_pivot)
             apply_excel_format(writer, "Pod pivot", pod_pivot)
 
-        # 2. TARGET LOOP
         email_map_to = dict(zip(email_df['Target'].astype(str).str.strip(), email_df['Email'].astype(str).str.strip()))
         email_map_cc = dict(zip(email_df['Target'].astype(str).str.strip(), email_df['CC'].astype(str).str.strip()))
         all_targets = set(list(dispatch_df['Location'].unique()) + list(pod_df['RM'].unique()))
@@ -162,7 +169,6 @@ if raw_file and mapping_file:
                 sub_disp = d_excel[dispatch_df['Location' if is_loc else 'RM'] == target].copy()
                 sub_pod = p_excel[pod_df['Location' if is_loc else 'RM'] == target].copy()
 
-                # Mail Body with 7 day filter (DD-MM-YYYY included)
                 crit_data = dispatch_df[(dispatch_df['Location' if is_loc else 'RM'] == target) & (dispatch_df["Pending Days"] > 7)].copy()
                 crit_data["Billing_Date"] = crit_data["Billing_Date"].dt.strftime('%d-%m-%Y')
                 t_disp = crit_data[["Billing_Doc", "Customer_Name", "Billing_Date", "Pending Days", "Bill_Amount"]].to_html(index=False, border=1) if not crit_data.empty else "<p>No critical pending (>7 days).</p>"
@@ -181,7 +187,6 @@ if raw_file and mapping_file:
                 send_email_smtp(email_map_to[str(target)], f"Daily Report - {target}", body, fname, email_map_cc.get(str(target)))
                 st.write(f"✅ Sent: {target}")
 
-        # 3. MASTER MAIL
         send_email_smtp(SENDER_EMAIL, "Master Report Consolidated", "Attached is the main sheet.", master_fname)
-        st.success("All Mails and Master Sheet Sent!")
+        st.success("All Mails and Master Sheet (with Grand Totals) Sent!")
         st.balloons()
