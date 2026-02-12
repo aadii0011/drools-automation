@@ -101,7 +101,7 @@ if raw_file and mapping_file:
     df["Billing_Date"] = pd.to_datetime(df["Billing_Date"], errors="coerce")
     today = pd.Timestamp.now().normalize()
 
-    # Remarks Logic
+    # --- Remarks Logic ---
     df["Yesterday Remarks"] = ""
     df["Yesterday Standard Remarks"] = ""
     if yesterday_file:
@@ -152,17 +152,38 @@ if raw_file and mapping_file:
     met3.metric("Processed POD Count", f"{len(pod_df)}")
     st.markdown("---")
 
-    if st.button("🚀 Run Automation & Send Mails"):
-        d_excel = dispatch_df.copy()
-        p_excel = pod_df[[c for c in POD_ORDER if c in pod_df.columns]].copy()
-        
-        d_excel["Billing_Date"] = d_excel["Billing_Date"].dt.strftime('%d-%m-%Y')
-        p_excel["Billing_Date"] = p_excel["Billing_Date"].dt.strftime('%d-%m-%Y')
-        p_excel["Dispatch_Date"] = p_excel["Dispatch_Date"].dt.strftime('%d-%m-%Y')
+    # --- ACTION BUTTONS ---
+    col_btn1, col_btn2 = st.columns(2)
 
-        curr_date = datetime.now().strftime('%d.%m.%Y')
-        master_fname = f"Pending Dispatches & PODS - Master - {curr_date}.xlsx"
+    curr_date = datetime.now().strftime('%d.%m.%Y')
+    master_fname = f"Pending Dispatches & PODS - Master - {curr_date}.xlsx"
+
+    # Preparations for Excel
+    d_excel = dispatch_df.copy()
+    p_excel = pod_df[[c for c in POD_ORDER if c in pod_df.columns]].copy()
+    d_excel["Billing_Date"] = d_excel["Billing_Date"].dt.strftime('%d-%m-%Y')
+    p_excel["Billing_Date"] = p_excel["Billing_Date"].dt.strftime('%d-%m-%Y')
+    p_excel["Dispatch_Date"] = p_excel["Dispatch_Date"].dt.strftime('%d-%m-%Y')
+
+    # BUTTON 1: MASTER REPORT ONLY
+    if col_btn1.button("📊 Generate Master Report Only"):
+        with pd.ExcelWriter(master_fname, engine='xlsxwriter') as writer:
+            d_excel.to_excel(writer, sheet_name="Dispatch", index=False)
+            p_excel.to_excel(writer, sheet_name="Pod", index=False)
+            dispatch_pivot.to_excel(writer, sheet_name="Dispatch pivot", index=False)
+            pod_pivot.to_excel(writer, sheet_name="Pod pivot", index=False)
+            apply_excel_format(writer, "Dispatch", d_excel)
+            apply_excel_format(writer, "Pod", p_excel)
+            apply_excel_format(writer, "Dispatch pivot", dispatch_pivot)
+            apply_excel_format(writer, "Pod pivot", pod_pivot)
         
+        with open(master_fname, "rb") as f:
+            st.download_button("📂 Click to Download Master Report", f, file_name=master_fname)
+        st.success("Master Report Generated!")
+
+    # BUTTON 2: FULL AUTOMATION
+    if col_btn2.button("🚀 Run Full Automation (Mails + Master)"):
+        # Create Master File
         with pd.ExcelWriter(master_fname, engine='xlsxwriter') as writer:
             d_excel.to_excel(writer, sheet_name="Dispatch", index=False)
             p_excel.to_excel(writer, sheet_name="Pod", index=False)
@@ -173,51 +194,29 @@ if raw_file and mapping_file:
             apply_excel_format(writer, "Dispatch pivot", dispatch_pivot)
             apply_excel_format(writer, "Pod pivot", pod_pivot)
 
-        email_map_to = dict(zip(email_df['Target'].astype(str).str.strip(), email_df['Email'].astype(str).str.strip()))
-        email_map_cc = dict(zip(email_df['Target'].astype(str).str.strip(), email_df['CC'].astype(str).str.strip()))
-        all_targets = set(list(dispatch_df['Location'].unique()) + list(pod_df['RM'].unique()))
-        
-        # --- IMPROVED CSS STYLE: AUTO-FIT ---
+        # Style and Send Mails
         table_style = """
         <style>
-            table {
-                border-collapse: collapse; 
-                width: auto; /* Fix for stretching */
-                min-width: 600px;
-                font-family: Calibri, sans-serif; 
-                font-size: 13px; 
-                border: 1px solid #ddd;
-                margin-top: 10px;
-            }
-            th {
-                background-color: #1f4e78; 
-                color: white; 
-                padding: 10px 15px; 
-                border: 1px solid #ddd; 
-                text-align: center;
-                white-space: nowrap;
-            }
-            td {
-                padding: 8px 12px; 
-                border: 1px solid #ddd; 
-                text-align: center;
-                white-space: nowrap;
-            }
+            table {border-collapse: collapse; width: auto; min-width: 600px; font-family: Calibri, sans-serif; font-size: 13px; border: 1px solid #ddd; margin-top: 10px;}
+            th {background-color: #1f4e78; color: white; padding: 10px 15px; border: 1px solid #ddd; text-align: center; white-space: nowrap;}
+            td {padding: 8px 12px; border: 1px solid #ddd; text-align: center; white-space: nowrap;}
             tr:nth-child(even) {background-color: #f9f9f9;}
             .red-text {color: #d9534f; font-weight: bold;}
         </style>
         """
 
+        email_map_to = dict(zip(email_df['Target'].astype(str).str.strip(), email_df['Email'].astype(str).str.strip()))
+        email_map_cc = dict(zip(email_df['Target'].astype(str).str.strip(), email_df['CC'].astype(str).str.strip()))
+        all_targets = set(list(dispatch_df['Location'].unique()) + list(pod_df['RM'].unique()))
+        
         for target in all_targets:
             if str(target) in email_map_to:
                 fname = f"Pending Dispatches & PODS - {target}.xlsx"
                 is_loc = target in dispatch_df['Location'].values
-                
                 sub_disp_xl = d_excel[dispatch_df['Location' if is_loc else 'RM'] == target].copy()
                 sub_pod_xl = p_excel[pod_df['Location' if is_loc else 'RM'] == target].copy()
 
                 crit_data = dispatch_df[(dispatch_df['Location' if is_loc else 'RM'] == target) & (dispatch_df["Pending Days"] > 7)].copy()
-                
                 if not crit_data.empty:
                     crit_data["Billing_Date"] = crit_data["Billing_Date"].dt.strftime('%d-%m-%Y')
                     crit_data["Bill_Amount"] = crit_data["Bill_Amount"].apply(lambda x: f"₹{x:,.0f}")
@@ -228,30 +227,11 @@ if raw_file and mapping_file:
                 
                 loc_sum = pod_pivot[pod_pivot['Location' if is_loc else 'RM'] == target].copy()
                 if not loc_sum.empty:
-                    if loc_sum.columns[-1] == "":
-                        loc_sum.columns = [*loc_sum.columns[:-1], 'Total']
+                    if loc_sum.columns[-1] == "": loc_sum.columns = [*loc_sum.columns[:-1], 'Total']
                     t_pod = loc_sum.to_html(index=False)
-                else:
-                    t_pod = ""
+                else: t_pod = ""
 
-                body = f"""
-                <html>
-                <head>{table_style}</head>
-                <body style='font-family: Calibri, sans-serif;'>
-                    <p>Dear <b>{target}</b>,</p>
-                    <p>Please find the attached Daily Dispatch & POD Report.</p>
-                    <p style="color: #2e6da4;"><b>Important:</b> Please make sure to revert with proper dispatch remarks before <b>11.00 AM</b>.</p>
-                    
-                    <h3 style='color:#d9534f; border-bottom: 2px solid #d9534f; display: inline-block; padding-bottom: 3px;'>⚠️ Critical Pending Dispatches (>7 Days)</h3>
-                    <div>{t_disp}</div>
-                    
-                    <h3 style='color:#1f4e78; border-bottom: 2px solid #1f4e78; display: inline-block; padding-bottom: 3px; margin-top: 20px;'>📦 POD Performance Summary</h3>
-                    <div>{t_pod}</div>
-                    
-                    <p style="margin-top: 25px;">Regards,<br><b>Aditya Dubey</b></p>
-                </body>
-                </html>
-                """
+                body = f"<html><head>{table_style}</head><body style='font-family: Calibri, sans-serif;'><p>Dear <b>{target}</b>,</p><p>Please find the attached Daily Dispatch & POD Report.</p><p style='color: #2e6da4;'><b>Important:</b> Please make sure to revert with proper dispatch remarks before <b>11.00 AM</b>.</p><h3 style='color:#d9534f; border-bottom: 2px solid #d9534f; display: inline-block; padding-bottom: 3px;'>⚠️ Critical Pending Dispatches (>7 Days)</h3><div>{t_disp}</div><h3 style='color:#1f4e78; border-bottom: 2px solid #1f4e78; display: inline-block; padding-bottom: 3px; margin-top: 20px;'>📦 POD Performance Summary</h3><div>{t_pod}</div><p style='margin-top: 25px;'>Regards,<br><b>Aditya Dubey</b></p></body></html>"
                 
                 subject = f"Pending Dispatches & PODS - {target} - {curr_date}"
 
