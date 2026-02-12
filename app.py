@@ -37,7 +37,15 @@ def apply_excel_format(writer, sheet_name, df_obj):
     worksheet = writer.sheets[sheet_name]
     header_fmt = workbook.add_format({'bold': True, 'bg_color': '#B8CCE4', 'border': 1, 'align': 'center'})
     cell_fmt = workbook.add_format({'border': 1})
+    red_text_fmt = workbook.add_format({'font_color': '#FF0000', 'border': 1})
+    
     worksheet.conditional_format(0, 0, len(df_obj), len(df_obj.columns) - 1, {'type': 'no_errors', 'format': cell_fmt})
+    
+    if "Pending Days" in df_obj.columns:
+        col_idx = df_obj.columns.get_loc("Pending Days")
+        worksheet.conditional_format(1, col_idx, len(df_obj), col_idx, 
+                                    {'type': 'cell', 'criteria': '>', 'value': 5, 'format': red_text_fmt})
+
     for i, col in enumerate(df_obj.columns):
         worksheet.write(0, i, col, header_fmt)
         if not df_obj.empty:
@@ -86,14 +94,14 @@ if raw_file and mapping_file:
     df["Plant"] = df["Plant"].astype(str).str.strip()
     mapping["PLANT"] = mapping["PLANT"].astype(str).str.strip()
     df = df.merge(mapping, left_on="Plant", right_on="PLANT", how="left")
-    df = df.rename(columns={"LOCATION": "Location", "RM": "RM"})
+    df = df.rename(columns={"LOCATION": "Location", "RM": "RM", "LOCAL_UPCOUNTRY": "Local/Upcountry"})
     df = df[df["Plant_Name"].astype(str).str.upper().str.contains("DROOLS PET FOOD", na=False)]
     
     df["Dispatch_Date"] = pd.to_datetime(df["Dispatch_Date"], errors="coerce")
     df["Billing_Date"] = pd.to_datetime(df["Billing_Date"], errors="coerce")
     today = pd.Timestamp.now().normalize()
 
-    # Yesterday Remarks logic
+    # Remarks Logic
     df["Yesterday Remarks"] = ""
     df["Yesterday Standard Remarks"] = ""
     if yesterday_file:
@@ -101,7 +109,16 @@ if raw_file and mapping_file:
         y_df["Billing_Doc"] = y_df["Billing_Doc"].astype(str).str.strip()
         df["Billing_Doc_Match"] = df["Billing_Doc"].astype(str).str.strip()
         rem_map = y_df.set_index("Billing_Doc")["Disptch_Remark"].to_dict()
-        df["Yesterday Remarks"] = df["Billing_Doc_Match"].map(rem_map).fillna("")
+        df["Yesterday Remarks"] = df["Billing_Doc_Match"].map(rem_map)
+        mask_rem = df["Yesterday Remarks"].isna() | (df["Yesterday Remarks"].astype(str).str.strip() == "")
+        df.loc[mask_rem, "Yesterday Remarks"] = "Billed on " + df.loc[mask_rem, "Billing_Date"].dt.strftime('%d-%m-%Y')
+        
+        std_col = next((c for c in y_df.columns if "Standard" in c), None)
+        if std_col:
+            std_map = y_df.set_index("Billing_Doc")[std_col].to_dict()
+            df["Yesterday Standard Remarks"] = df["Billing_Doc_Match"].map(std_map)
+            mask_std = df["Yesterday Standard Remarks"].isna() | (df["Yesterday Standard Remarks"].astype(str).str.strip() == "")
+            df.loc[mask_std, "Yesterday Standard Remarks"] = "Billed on " + df.loc[mask_std, "Billing_Date"].dt.strftime('%d-%m-%Y')
 
     df = df.sort_values(by=["Location", "Billing_Date"], ascending=[True, True])
 
@@ -113,19 +130,20 @@ if raw_file and mapping_file:
     pod_df = df[df["Dispatch_Date"].notna()].copy()
     pattern_p = "|".join(REMOVE_RSM_POD)
     pod_df = pod_df[~pod_df["RSM_Name"].str.upper().str.contains(pattern_p, na=False)]
+    
+    pod_df["Days"] = (today - pod_df["Dispatch_Date"]).dt.days
     pod_df["Month"] = pod_df["Billing_Date"].dt.strftime("%b")
-    pod_df = pod_df[[c for c in POD_ORDER if c in pod_df.columns]]
-
-    # --- DISPATCH PIVOT WITH GRAND TOTAL ---
+    pod_df["Year"] = pod_df["Billing_Date"].dt.year
+    pod_df["Sort_Key"] = pod_df["Billing_Date"].dt.year * 100 + pod_df["Billing_Date"].dt.month
+    
     dispatch_pivot = dispatch_df.groupby("Location").agg({"Billing_Doc":"count", "Bill_Amount":"sum", "Gross_Weight_Tons":"sum"}).rename(columns={"Billing_Doc":"Invoice Count"}).reset_index()
-    d_total = pd.DataFrame({"Location":["Grand Total"], "Invoice Count":[dispatch_pivot["Invoice Count"].sum()], "Bill_Amount":[dispatch_pivot["Bill_Amount"].sum()], "Gross_Weight_Tons":[dispatch_pivot["Gross_Weight_Tons"].sum()]})
+    d_total = pd.DataFrame({"Location":["Total"], "Invoice Count":[dispatch_pivot["Invoice Count"].sum()], "Bill_Amount":[dispatch_pivot["Bill_Amount"].sum()], "Gross_Weight_Tons":[dispatch_pivot["Gross_Weight_Tons"].sum()]})
     dispatch_pivot = pd.concat([dispatch_pivot, d_total], ignore_index=True)
 
-    # --- POD PIVOT ---
-    pod_pivot = pd.pivot_table(pod_df, index=["RM", "Location"], columns="Month", values="Billing_Doc", aggfunc="count", fill_value=0, margins=True, margins_name="Grand Total").reset_index()
-    pod_pivot.columns.name = None
+    pod_pivot = pd.pivot_table(pod_df, index=["RM", "Location"], columns=["Sort_Key", "Month"], values="Billing_Doc", aggfunc="count", fill_value=0, margins=True, margins_name="Total")
+    pod_pivot.columns = [col[1] if isinstance(col, tuple) else col for col in pod_pivot.columns]
+    pod_pivot = pod_pivot.reset_index().replace(0, "")
 
-    # --- DASHBOARD ---
     st.markdown("---")
     st.subheader("📌 Live Summary Dashboard")
     met1, met2, met3 = st.columns(3)
@@ -136,12 +154,14 @@ if raw_file and mapping_file:
 
     if st.button("🚀 Run Automation & Send Mails"):
         d_excel = dispatch_df.copy()
-        p_excel = pod_df.copy()
+        p_excel = pod_df[[c for c in POD_ORDER if c in pod_df.columns]].copy()
+        
         d_excel["Billing_Date"] = d_excel["Billing_Date"].dt.strftime('%d-%m-%Y')
         p_excel["Billing_Date"] = p_excel["Billing_Date"].dt.strftime('%d-%m-%Y')
         p_excel["Dispatch_Date"] = p_excel["Dispatch_Date"].dt.strftime('%d-%m-%Y')
 
-        master_fname = f"Pending dispatches and pod {datetime.now().strftime('%d-%b-%Y')}.xlsx"
+        curr_date = datetime.now().strftime('%d.%m.%Y')
+        master_fname = f"Pending Dispatches & PODS - Master - {curr_date}.xlsx"
         
         with pd.ExcelWriter(master_fname, engine='xlsxwriter') as writer:
             d_excel.to_excel(writer, sheet_name="Dispatch", index=False)
@@ -157,26 +177,83 @@ if raw_file and mapping_file:
         email_map_cc = dict(zip(email_df['Target'].astype(str).str.strip(), email_df['CC'].astype(str).str.strip()))
         all_targets = set(list(dispatch_df['Location'].unique()) + list(pod_df['RM'].unique()))
         
+        # --- IMPROVED CSS STYLE: AUTO-FIT ---
+        table_style = """
+        <style>
+            table {
+                border-collapse: collapse; 
+                width: auto; /* Fix for stretching */
+                min-width: 600px;
+                font-family: Calibri, sans-serif; 
+                font-size: 13px; 
+                border: 1px solid #ddd;
+                margin-top: 10px;
+            }
+            th {
+                background-color: #1f4e78; 
+                color: white; 
+                padding: 10px 15px; 
+                border: 1px solid #ddd; 
+                text-align: center;
+                white-space: nowrap;
+            }
+            td {
+                padding: 8px 12px; 
+                border: 1px solid #ddd; 
+                text-align: center;
+                white-space: nowrap;
+            }
+            tr:nth-child(even) {background-color: #f9f9f9;}
+            .red-text {color: #d9534f; font-weight: bold;}
+        </style>
+        """
+
         for target in all_targets:
             if str(target) in email_map_to:
-                fname = f"Report_{target}.xlsx"
+                fname = f"Pending Dispatches & PODS - {target}.xlsx"
                 is_loc = target in dispatch_df['Location'].values
                 
                 sub_disp_xl = d_excel[dispatch_df['Location' if is_loc else 'RM'] == target].copy()
                 sub_pod_xl = p_excel[pod_df['Location' if is_loc else 'RM'] == target].copy()
 
-                # --- DISPATCH TABLE IN MAIL (LOCATION ADDED) ---
                 crit_data = dispatch_df[(dispatch_df['Location' if is_loc else 'RM'] == target) & (dispatch_df["Pending Days"] > 7)].copy()
-                crit_data["Billing_Date"] = crit_data["Billing_Date"].dt.strftime('%d-%m-%Y')
                 
-                # Selecting columns for mail body table
-                mail_cols = ["Location", "Billing_Doc", "Customer_Name", "Billing_Date", "Pending Days", "Bill_Amount"]
-                t_disp = crit_data[mail_cols].to_html(index=False, border=1) if not crit_data.empty else "<p>No critical pending (>7 days).</p>"
+                if not crit_data.empty:
+                    crit_data["Billing_Date"] = crit_data["Billing_Date"].dt.strftime('%d-%m-%Y')
+                    crit_data["Bill_Amount"] = crit_data["Bill_Amount"].apply(lambda x: f"₹{x:,.0f}")
+                    crit_data["Pending Days"] = crit_data["Pending Days"].apply(lambda x: f"<span class='red-text'>{x}</span>")
                 
-                loc_sum = pod_pivot[pod_pivot['Location' if is_loc else 'RM'] == target]
-                t_pod = loc_sum.to_html(index=False, border=1) if not loc_sum.empty else ""
+                mail_cols = ["Location", "Billing_Doc", "Customer_Name", "Billing_Date", "Pending Days", "Bill_Amount", "Yesterday Remarks"]
+                t_disp = crit_data[mail_cols].to_html(index=False, escape=False) if not crit_data.empty else "<p>No critical pending (>7 days).</p>"
+                
+                loc_sum = pod_pivot[pod_pivot['Location' if is_loc else 'RM'] == target].copy()
+                if not loc_sum.empty:
+                    if loc_sum.columns[-1] == "":
+                        loc_sum.columns = [*loc_sum.columns[:-1], 'Total']
+                    t_pod = loc_sum.to_html(index=False)
+                else:
+                    t_pod = ""
 
-                body = f"<html><body style='font-family: Calibri;'>Dear <b>{target}</b>,<br>Attached is your daily report.<br><h3 style='color:red;'>⚠️ Critical Pending (>7 Days)</h3>{t_disp}<h3>📦 POD Summary</h3>{t_pod}<br>Regards, <b>Aditya</b></body></html>"
+                body = f"""
+                <html>
+                <head>{table_style}</head>
+                <body style='font-family: Calibri, sans-serif;'>
+                    <p>Dear <b>{target}</b>,</p>
+                    <p>Please find the attached Daily Dispatch & POD Report.</p>
+                    <p style="color: #2e6da4;"><b>Important:</b> Please make sure to revert with proper dispatch remarks before <b>11.00 AM</b>.</p>
+                    
+                    <h3 style='color:#d9534f; border-bottom: 2px solid #d9534f; display: inline-block; padding-bottom: 3px;'>⚠️ Critical Pending Dispatches (>7 Days)</h3>
+                    <div>{t_disp}</div>
+                    
+                    <h3 style='color:#1f4e78; border-bottom: 2px solid #1f4e78; display: inline-block; padding-bottom: 3px; margin-top: 20px;'>📦 POD Performance Summary</h3>
+                    <div>{t_pod}</div>
+                    
+                    <p style="margin-top: 25px;">Regards,<br><b>Aditya Dubey</b></p>
+                </body>
+                </html>
+                """
+                
+                subject = f"Pending Dispatches & PODS - {target} - {curr_date}"
 
                 with pd.ExcelWriter(fname, engine='xlsxwriter') as writer:
                     sub_disp_xl.to_excel(writer, sheet_name="Dispatch", index=False)
@@ -184,9 +261,9 @@ if raw_file and mapping_file:
                     apply_excel_format(writer, "Dispatch", sub_disp_xl)
                     apply_excel_format(writer, "Pod", sub_pod_xl)
 
-                send_email_smtp(email_map_to[str(target)], f"Daily Report - {target}", body, fname, email_map_cc.get(str(target)))
+                send_email_smtp(email_map_to[str(target)], subject, body, fname, email_map_cc.get(str(target)))
                 st.write(f"✅ Sent: {target}")
 
-        send_email_smtp(SENDER_EMAIL, "Master Report Consolidated", "Attached is the main sheet.", master_fname)
-        st.success("Main Sheet Sent to Admin & Target Mails Dispatched!")
+        send_email_smtp(SENDER_EMAIL, f"Master Consolidated Report - {curr_date}", "Master file attached.", master_fname)
+        st.success("Automated Mails Dispatched Successfully!")
         st.balloons()
