@@ -23,6 +23,7 @@ DISPATCH_ORDER = [
     "Yesterday Standard Remarks", "RSM_Name", "ASM_Name", "RM", "Gross_Weight_Tons"
 ]
 
+# Yahan 'Local/Upcountry' add kar diya gaya hai
 POD_ORDER = [
     "Plant", "Location", "Billing_Date", "Month", "Days", "Year",
     "Billing_Doc", "Customer_No", "Customer_Name",
@@ -111,14 +112,16 @@ if raw_file and mapping_file:
         rem_map = y_df.set_index("Billing_Doc")["Disptch_Remark"].to_dict()
         df["Yesterday Remarks"] = df["Billing_Doc_Match"].map(rem_map)
         mask_rem = df["Yesterday Remarks"].isna() | (df["Yesterday Remarks"].astype(str).str.strip() == "")
-        df.loc[mask_rem, "Yesterday Remarks"] = "Billed on " + df.loc[mask_rem, "Billing_Date"].dt.strftime('%d-%m-%Y')
+        # Date format updated here to dd/mm/yyyy
+        df.loc[mask_rem, "Yesterday Remarks"] = "Billed on " + df.loc[mask_rem, "Billing_Date"].dt.strftime('%d/%m/%Y')
         
         std_col = next((c for c in y_df.columns if "Standard" in c), None)
         if std_col:
             std_map = y_df.set_index("Billing_Doc")[std_col].to_dict()
             df["Yesterday Standard Remarks"] = df["Billing_Doc_Match"].map(std_map)
             mask_std = df["Yesterday Standard Remarks"].isna() | (df["Yesterday Standard Remarks"].astype(str).str.strip() == "")
-            df.loc[mask_std, "Yesterday Standard Remarks"] = "Billed on " + df.loc[mask_std, "Billing_Date"].dt.strftime('%d-%m-%Y')
+            # Date format updated here to dd/mm/yyyy
+            df.loc[mask_std, "Yesterday Standard Remarks"] = "Billed on " + df.loc[mask_std, "Billing_Date"].dt.strftime('%d/%m/%Y')
 
     df = df.sort_values(by=["Location", "Billing_Date"], ascending=[True, True])
 
@@ -128,6 +131,13 @@ if raw_file and mapping_file:
     dispatch_df = dispatch_df[[c for c in DISPATCH_ORDER if c in dispatch_df.columns]]
 
     pod_df = df[df["Dispatch_Date"].notna()].copy()
+    
+    # Calculate Local/Upcountry based on your formula
+    pod_df["Local/Upcountry"] = pod_df.apply(
+        lambda x: "Local" if str(x["Location"]).strip().upper() == str(x["Customer_City"]).strip().upper() 
+        else "Upcountry", axis=1
+    )
+
     pattern_p = "|".join(REMOVE_RSM_POD)
     pod_df = pod_df[~pod_df["RSM_Name"].str.upper().str.contains(pattern_p, na=False)]
     
@@ -158,12 +168,12 @@ if raw_file and mapping_file:
     curr_date = datetime.now().strftime('%d.%m.%Y')
     master_fname = f"Pending Dispatches & PODS - Master - {curr_date}.xlsx"
 
-    # Preparations for Excel
+    # Preparations for Excel with DD/MM/YYYY
     d_excel = dispatch_df.copy()
     p_excel = pod_df[[c for c in POD_ORDER if c in pod_df.columns]].copy()
-    d_excel["Billing_Date"] = d_excel["Billing_Date"].dt.strftime('%d-%m-%Y')
-    p_excel["Billing_Date"] = p_excel["Billing_Date"].dt.strftime('%d-%m-%Y')
-    p_excel["Dispatch_Date"] = p_excel["Dispatch_Date"].dt.strftime('%d-%m-%Y')
+    d_excel["Billing_Date"] = d_excel["Billing_Date"].dt.strftime('%d/%m/%Y')
+    p_excel["Billing_Date"] = p_excel["Billing_Date"].dt.strftime('%d/%m/%Y')
+    p_excel["Dispatch_Date"] = p_excel["Dispatch_Date"].dt.strftime('%d/%m/%Y')
 
     # BUTTON 1: MASTER REPORT ONLY
     if col_btn1.button("📊 Generate Master Report Only"):
@@ -183,7 +193,6 @@ if raw_file and mapping_file:
 
     # BUTTON 2: FULL AUTOMATION
     if col_btn2.button("🚀 Run Full Automation (Mails + Master)"):
-        # Create Master File
         with pd.ExcelWriter(master_fname, engine='xlsxwriter') as writer:
             d_excel.to_excel(writer, sheet_name="Dispatch", index=False)
             p_excel.to_excel(writer, sheet_name="Pod", index=False)
@@ -194,7 +203,6 @@ if raw_file and mapping_file:
             apply_excel_format(writer, "Dispatch pivot", dispatch_pivot)
             apply_excel_format(writer, "Pod pivot", pod_pivot)
 
-        # Style and Send Mails
         table_style = """
         <style>
             table {border-collapse: collapse; width: auto; min-width: 600px; font-family: Calibri, sans-serif; font-size: 13px; border: 1px solid #ddd; margin-top: 10px;}
@@ -218,7 +226,8 @@ if raw_file and mapping_file:
 
                 crit_data = dispatch_df[(dispatch_df['Location' if is_loc else 'RM'] == target) & (dispatch_df["Pending Days"] > 7)].copy()
                 if not crit_data.empty:
-                    crit_data["Billing_Date"] = crit_data["Billing_Date"].dt.strftime('%d-%m-%Y')
+                    # Date format updated here for email table
+                    crit_data["Billing_Date"] = crit_data["Billing_Date"].dt.strftime('%d/%m/%Y')
                     crit_data["Bill_Amount"] = crit_data["Bill_Amount"].apply(lambda x: f"₹{x:,.0f}")
                     crit_data["Pending Days"] = crit_data["Pending Days"].apply(lambda x: f"<span class='red-text'>{x}</span>")
                 
